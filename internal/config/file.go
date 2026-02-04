@@ -1,0 +1,43 @@
+package config
+
+import (
+	"os"
+	"time"
+
+	"gopkg.in/yaml.v3"
+)
+
+type fileConfig struct {
+	DatabaseURL string `yaml:"database_url"`
+	UserAgent   string `yaml:"user_agent"`
+	Timeout     string `yaml:"timeout"`
+}
+
+// LoadFromFile loads config from a YAML file. database_url is required.
+func LoadFromFile(path string) (*Config, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var f fileConfig
+	if err := yaml.Unmarshal(data, &f); err != nil {
+		return nil, err
+	}
+	if f.DatabaseURL == "" {
+		return nil, ErrMissingDatabaseURL
+	}
+	c := &Config{
+		DatabaseURL: f.DatabaseURL,
+		UserAgent:   f.UserAgent,
+		Timeout:      30 * time.Second,
+	}
+	if c.UserAgent == "" {
+		c.UserAgent = "PopcornVault/1.0"
+	}
+	if f.Timeout != "" {
+		if d, err := time.ParseDuration(f.Timeout); err == nil {
+			c.Timeout = d
+		}
+	}
+	return c, nil
+}

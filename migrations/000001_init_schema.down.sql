@@ -1,0 +1,4 @@
+DROP TABLE IF EXISTS channel_http_headers;
+DROP TABLE IF EXISTS channels;
+DROP TABLE IF EXISTS groups;
+DROP TABLE IF EXISTS sources;
