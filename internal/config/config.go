@@ -24,7 +24,7 @@ func Load() (*Config, error) {
 		DatabaseURL: os.Getenv("DATABASE_URL"),
 		ServerPort:  os.Getenv("SERVER_PORT"),
 		UserAgent:   os.Getenv("FETCHER_USER_AGENT"),
-		Timeout:     30 * time.Second,
+		Timeout:     5 * time.Minute,
 	}
 	if c.ServerPort == "" {
 		c.ServerPort = "8080"

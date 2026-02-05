@@ -77,7 +77,7 @@ All endpoints are prefixed with `/api`.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/channels` | List/search channels. Query params: `search`, `source_id`, `group_id`, `limit` (default 50, max 200), `offset`. |
+| GET | `/api/channels` | List/search channels. Query params: `search`, `source_id`, `group_id`, `media_type` (0=Live, 1=Movie, 2=Serie), `limit` (default 50, max 200), `offset`. |
 | PATCH | `/api/channels/{id}/favorite` | Set or unset a channel as favorite. Body: `{"favorite": true}`. |
 
 ### Groups
@@ -148,6 +148,9 @@ curl "http://localhost:8080/api/channels?search=batman"
 # Filter by source and group
 curl "http://localhost:8080/api/channels?source_id=1&group_id=3"
 
+# Filter by media type (0=Live, 1=Movie, 2=Serie)
+curl "http://localhost:8080/api/channels?media_type=1"
+
 # Favorite a channel
 curl -X PATCH http://localhost:8080/api/channels/42/favorite \
   -H "Content-Type: application/json" \
@@ -177,7 +180,7 @@ Channels response shape:
 | `DATABASE_URL`        | Yes      | PostgreSQL connection string.        |
 | `SERVER_PORT`         | No       | HTTP server port (default: `8080`). |
 | `FETCHER_USER_AGENT`  | No       | User-Agent for HTTP fetch (default: `PopcornVault/1.0`). |
-| `FETCHER_TIMEOUT`     | No       | HTTP timeout, e.g. `30s` (default: `30s`). |
+| `FETCHER_TIMEOUT`     | No       | HTTP fetch timeout, e.g. `5m` (default: `5m`). |
 
 Copy `.env.example` to `.env.local` and adjust:
 

@@ -169,6 +169,12 @@ paths:
           schema:
             type: integer
             format: int64
+        - name: media_type
+          in: query
+          description: "Filter by media type (0 = Livestream, 1 = Movie, 2 = Serie)"
+          schema:
+            type: integer
+            enum: [0, 1, 2]
         - name: limit
           in: query
           description: "Max items to return (default: 50, max: 200)"
@@ -319,7 +325,7 @@ components:
           nullable: true
         media_type:
           type: integer
-          description: "0 = Livestream, 1 = Movie, 2 = Serie, 3 = Group, 4 = Season"
+          description: "0 = Livestream, 1 = Movie, 2 = Serie"
         source_id:
           type: integer
           format: int64

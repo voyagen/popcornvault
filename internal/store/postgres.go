@@ -184,6 +184,11 @@ func (p *Postgres) ListChannels(ctx context.Context, filter ChannelFilter) ([]mo
 		args = append(args, *filter.GroupID)
 		argIdx++
 	}
+	if filter.MediaType != nil {
+		where = append(where, fmt.Sprintf("c.media_type = $%d", argIdx))
+		args = append(args, *filter.MediaType)
+		argIdx++
+	}
 	if filter.Search != "" {
 		where = append(where, fmt.Sprintf("c.name ILIKE $%d", argIdx))
 		args = append(args, "%"+filter.Search+"%")

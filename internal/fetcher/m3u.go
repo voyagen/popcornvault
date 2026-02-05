@@ -149,6 +149,14 @@ func (e *parseError) Error() string { return e.msg }
 
 func mediaTypeFromURL(url string) int16 {
 	lower := strings.ToLower(url)
+	// Xtream Codes path patterns take priority.
+	if strings.Contains(lower, "/movie/") {
+		return models.MediaTypeMovie
+	}
+	if strings.Contains(lower, "/series/") {
+		return models.MediaTypeSerie
+	}
+	// Fallback: file extension for non-Xtream VOD.
 	if strings.HasSuffix(lower, ".mp4") || strings.HasSuffix(lower, ".mkv") {
 		return models.MediaTypeMovie
 	}

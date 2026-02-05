@@ -42,11 +42,12 @@ type Store interface {
 
 // ChannelFilter holds optional filters for listing channels.
 type ChannelFilter struct {
-	SourceID *int64
-	GroupID  *int64
-	Search   string // case-insensitive substring match on channel name
-	Limit    int    // default 50, max 200
-	Offset   int
+	SourceID  *int64
+	GroupID   *int64
+	MediaType *int16 // 0 = Livestream, 1 = Movie, 2 = Serie
+	Search    string // case-insensitive substring match on channel name
+	Limit     int    // default 50, max 200
+	Offset    int
 }
 
 // SourceUpdate holds mutable fields for PATCH /sources/{id}.

@@ -65,9 +65,9 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	addr := ":" + s.cfg.ServerPort
 	httpServer := &http.Server{
 		Addr:         addr,
-		Handler:      s,
+		Handler:      withLogging(s),
 		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 60 * time.Second,
+		WriteTimeout: 10 * time.Minute,
 		IdleTimeout:  120 * time.Second,
 	}
 
@@ -283,6 +283,15 @@ func (s *Server) handleListChannels(w http.ResponseWriter, r *http.Request) {
 		}
 		filter.GroupID = &id
 	}
+	if v := q.Get("media_type"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 16)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid media_type: %s", v))
+			return
+		}
+		mt := int16(n)
+		filter.MediaType = &mt
+	}
 	if v := q.Get("limit"); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil {
@@ -379,6 +388,86 @@ func (s *Server) handleListGroups(w http.ResponseWriter, r *http.Request) {
 		groups = []models.Group{}
 	}
 	writeJSON(w, http.StatusOK, groups)
+}
+
+// --- middleware ---
+
+// statusWriter wraps http.ResponseWriter to capture the status code.
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *statusWriter) WriteHeader(code int) {
+	w.status = code
+	w.ResponseWriter.WriteHeader(code)
+}
+
+// withLogging wraps a handler and logs each request with method, path, status, and duration.
+func withLogging(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
+
+		next.ServeHTTP(sw, r)
+
+		duration := time.Since(start)
+		statusCode := sw.status
+
+		// Color the status code for terminal readability.
+		statusColor := colorForStatus(statusCode)
+		methodColor := colorForMethod(r.Method)
+
+		log.Printf("%s %-7s %s\x1b[0m  %s %3d %s\x1b[0m  %s",
+			methodColor, r.Method, "\x1b[0m",
+			statusColor, statusCode, "\x1b[0m",
+			formatDuration(duration),
+		)
+		if r.URL.RawQuery != "" {
+			log.Printf("         %s?%s", r.URL.Path, r.URL.RawQuery)
+		} else {
+			log.Printf("         %s", r.URL.Path)
+		}
+	})
+}
+
+func colorForStatus(code int) string {
+	switch {
+	case code >= 200 && code < 300:
+		return "\x1b[32m" // green
+	case code >= 300 && code < 400:
+		return "\x1b[36m" // cyan
+	case code >= 400 && code < 500:
+		return "\x1b[33m" // yellow
+	default:
+		return "\x1b[31m" // red
+	}
+}
+
+func colorForMethod(method string) string {
+	switch method {
+	case http.MethodGet:
+		return "\x1b[36m" // cyan
+	case http.MethodPost:
+		return "\x1b[32m" // green
+	case http.MethodPatch, http.MethodPut:
+		return "\x1b[33m" // yellow
+	case http.MethodDelete:
+		return "\x1b[31m" // red
+	default:
+		return "\x1b[37m" // white
+	}
+}
+
+func formatDuration(d time.Duration) string {
+	switch {
+	case d < time.Millisecond:
+		return fmt.Sprintf("%dus", d.Microseconds())
+	case d < time.Second:
+		return fmt.Sprintf("%dms", d.Milliseconds())
+	default:
+		return fmt.Sprintf("%.2fs", d.Seconds())
+	}
 }
 
 // --- helpers ---
