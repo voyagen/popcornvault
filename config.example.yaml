@@ -1,4 +1,5 @@
 # Example config. Prefer DATABASE_URL env for production.
 database_url: "postgres://user:password@localhost:5432/popcornvault?sslmode=disable"
+server_port: "8080"
 user_agent: "PopcornVault/1.0"
 timeout: "30s"

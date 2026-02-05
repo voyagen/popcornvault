@@ -9,6 +9,7 @@ import (
 
 type fileConfig struct {
 	DatabaseURL string `yaml:"database_url"`
+	ServerPort  string `yaml:"server_port"`
 	UserAgent   string `yaml:"user_agent"`
 	Timeout     string `yaml:"timeout"`
 }
@@ -28,8 +29,12 @@ func LoadFromFile(path string) (*Config, error) {
 	}
 	c := &Config{
 		DatabaseURL: f.DatabaseURL,
+		ServerPort:  f.ServerPort,
 		UserAgent:   f.UserAgent,
-		Timeout:      30 * time.Second,
+		Timeout:     30 * time.Second,
+	}
+	if c.ServerPort == "" {
+		c.ServerPort = "8080"
 	}
 	if c.UserAgent == "" {
 		c.UserAgent = "PopcornVault/1.0"

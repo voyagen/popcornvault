@@ -3,7 +3,9 @@ package store
 import (
 	"context"
 	"fmt"
+	"strings"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/voyagen/popcornvault/internal/models"
 )
@@ -127,4 +129,153 @@ func (p *Postgres) UpdateSourceLastUpdated(ctx context.Context, sourceID int64) 
 		return fmt.Errorf("UpdateSourceLastUpdated: %w", err)
 	}
 	return nil
+}
+
+// ListSources returns all sources ordered by id.
+func (p *Postgres) ListSources(ctx context.Context) ([]models.Source, error) {
+	rows, err := p.pool.Query(ctx,
+		`SELECT id, name, source_type, url, use_tvg_id, user_agent, enabled, last_updated, created_at
+		 FROM sources ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("ListSources: %w", err)
+	}
+	defer rows.Close()
+
+	var sources []models.Source
+	for rows.Next() {
+		var s models.Source
+		var userAgent *string
+		if err := rows.Scan(&s.ID, &s.Name, &s.SourceType, &s.URL, &s.UseTvgID, &userAgent, &s.Enabled, &s.LastUpdated, &s.CreatedAt); err != nil {
+			return nil, fmt.Errorf("ListSources scan: %w", err)
+		}
+		if userAgent != nil {
+			s.UserAgent = *userAgent
+		}
+		sources = append(sources, s)
+	}
+	return sources, rows.Err()
+}
+
+// ListChannels returns channels matching the filter and total count (before limit/offset).
+func (p *Postgres) ListChannels(ctx context.Context, filter ChannelFilter) ([]models.Channel, int, error) {
+	// Apply defaults.
+	if filter.Limit <= 0 {
+		filter.Limit = 50
+	}
+	if filter.Limit > 200 {
+		filter.Limit = 200
+	}
+	if filter.Offset < 0 {
+		filter.Offset = 0
+	}
+
+	// Build dynamic WHERE clause.
+	where := []string{}
+	args := []any{}
+	argIdx := 1
+
+	if filter.SourceID != nil {
+		where = append(where, fmt.Sprintf("c.source_id = $%d", argIdx))
+		args = append(args, *filter.SourceID)
+		argIdx++
+	}
+	if filter.GroupID != nil {
+		where = append(where, fmt.Sprintf("c.group_id = $%d", argIdx))
+		args = append(args, *filter.GroupID)
+		argIdx++
+	}
+	if filter.Search != "" {
+		where = append(where, fmt.Sprintf("c.name ILIKE $%d", argIdx))
+		args = append(args, "%"+filter.Search+"%")
+		argIdx++
+	}
+
+	whereClause := ""
+	if len(where) > 0 {
+		whereClause = "WHERE " + strings.Join(where, " AND ")
+	}
+
+	// Count query.
+	countQuery := fmt.Sprintf(`SELECT COUNT(*) FROM channels c %s`, whereClause)
+	var total int
+	if err := p.pool.QueryRow(ctx, countQuery, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("ListChannels count: %w", err)
+	}
+
+	// Data query with LEFT JOIN on groups for group_name.
+	dataQuery := fmt.Sprintf(
+		`SELECT c.id, c.name, c.image, c.url, c.media_type, c.source_id, c.group_id, c.favorite, g.name
+		 FROM channels c
+		 LEFT JOIN groups g ON c.group_id = g.id
+		 %s
+		 ORDER BY c.name
+		 LIMIT $%d OFFSET $%d`,
+		whereClause, argIdx, argIdx+1,
+	)
+	dataArgs := append(args, filter.Limit, filter.Offset)
+
+	rows, err := p.pool.Query(ctx, dataQuery, dataArgs...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("ListChannels query: %w", err)
+	}
+	defer rows.Close()
+
+	var channels []models.Channel
+	for rows.Next() {
+		var ch models.Channel
+		if err := rows.Scan(&ch.ID, &ch.Name, &ch.Image, &ch.URL, &ch.MediaType, &ch.SourceID, &ch.GroupID, &ch.Favorite, &ch.GroupName); err != nil {
+			return nil, 0, fmt.Errorf("ListChannels scan: %w", err)
+		}
+		channels = append(channels, ch)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("ListChannels rows: %w", err)
+	}
+	return channels, total, nil
+}
+
+// ListGroups returns groups, optionally filtered by source id, ordered by name.
+func (p *Postgres) ListGroups(ctx context.Context, sourceID *int64) ([]models.Group, error) {
+	var rows pgx.Rows
+	var err error
+	if sourceID != nil {
+		rows, err = p.pool.Query(ctx,
+			`SELECT id, name, image, source_id FROM groups WHERE source_id = $1 ORDER BY name`,
+			*sourceID,
+		)
+	} else {
+		rows, err = p.pool.Query(ctx,
+			`SELECT id, name, image, source_id FROM groups ORDER BY name`)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("ListGroups: %w", err)
+	}
+	defer rows.Close()
+
+	var groups []models.Group
+	for rows.Next() {
+		var g models.Group
+		if err := rows.Scan(&g.ID, &g.Name, &g.Image, &g.SourceID); err != nil {
+			return nil, fmt.Errorf("ListGroups scan: %w", err)
+		}
+		groups = append(groups, g)
+	}
+	return groups, rows.Err()
+}
+
+// GetSourceByID returns a single source by id.
+func (p *Postgres) GetSourceByID(ctx context.Context, sourceID int64) (*models.Source, error) {
+	var s models.Source
+	var userAgent *string
+	err := p.pool.QueryRow(ctx,
+		`SELECT id, name, source_type, url, use_tvg_id, user_agent, enabled, last_updated, created_at
+		 FROM sources WHERE id = $1`, sourceID,
+	).Scan(&s.ID, &s.Name, &s.SourceType, &s.URL, &s.UseTvgID, &userAgent, &s.Enabled, &s.LastUpdated, &s.CreatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("GetSourceByID: %w", err)
+	}
+	if userAgent != nil {
+		s.UserAgent = *userAgent
+	}
+	return &s, nil
 }

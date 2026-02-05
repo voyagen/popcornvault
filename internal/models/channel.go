@@ -11,4 +11,5 @@ type Channel struct {
 	SourceID  int64   `json:"source_id,omitempty"`
 	GroupID   *int64  `json:"group_id,omitempty"`
 	Favorite  bool    `json:"favorite"`
+	GroupName *string `json:"group_name,omitempty"` // populated by read queries (joined from groups table)
 }
