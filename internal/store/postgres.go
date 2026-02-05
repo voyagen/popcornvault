@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -50,24 +51,28 @@ func (p *Postgres) CreateOrGetSource(ctx context.Context, name, url string, sour
 }
 
 // WipeSourceChannels deletes all channels (and their headers) for the source, and groups for the source.
+// All deletes run inside a single transaction to avoid partial state on failure.
 func (p *Postgres) WipeSourceChannels(ctx context.Context, sourceID int64) error {
-	// Delete channel_http_headers for channels of this source, then channels, then groups.
-	_, err := p.pool.Exec(ctx,
+	tx, err := p.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("WipeSourceChannels begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx,
 		`DELETE FROM channel_http_headers WHERE channel_id IN (SELECT id FROM channels WHERE source_id = $1)`,
 		sourceID,
-	)
-	if err != nil {
+	); err != nil {
 		return fmt.Errorf("delete channel_http_headers: %w", err)
 	}
-	_, err = p.pool.Exec(ctx, `DELETE FROM channels WHERE source_id = $1`, sourceID)
-	if err != nil {
+	if _, err := tx.Exec(ctx, `DELETE FROM channels WHERE source_id = $1`, sourceID); err != nil {
 		return fmt.Errorf("delete channels: %w", err)
 	}
-	_, err = p.pool.Exec(ctx, `DELETE FROM groups WHERE source_id = $1`, sourceID)
-	if err != nil {
+	if _, err := tx.Exec(ctx, `DELETE FROM groups WHERE source_id = $1`, sourceID); err != nil {
 		return fmt.Errorf("delete groups: %w", err)
 	}
-	return nil
+
+	return tx.Commit(ctx)
 }
 
 // GetOrCreateGroup returns group id for name/sourceID.
@@ -166,6 +171,9 @@ func (p *Postgres) GetChannelByID(ctx context.Context, channelID int64) (*models
 		 WHERE c.id = $1`, channelID,
 	).Scan(&ch.ID, &ch.Name, &ch.Image, &ch.URL, &ch.MediaType, &ch.SourceID, &ch.GroupID, &ch.Favorite, &ch.GroupName)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("channel %d: %w", channelID, ErrNotFound)
+		}
 		return nil, fmt.Errorf("GetChannelByID: %w", err)
 	}
 	return &ch, nil
@@ -297,6 +305,9 @@ func (p *Postgres) GetSourceByID(ctx context.Context, sourceID int64) (*models.S
 		 FROM sources WHERE id = $1`, sourceID,
 	).Scan(&s.ID, &s.Name, &s.SourceType, &s.URL, &s.UseTvgID, &userAgent, &s.Enabled, &s.LastUpdated, &s.CreatedAt)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("source %d: %w", sourceID, ErrNotFound)
+		}
 		return nil, fmt.Errorf("GetSourceByID: %w", err)
 	}
 	if userAgent != nil {
@@ -345,7 +356,7 @@ func (p *Postgres) UpdateSource(ctx context.Context, sourceID int64, fields Sour
 		return fmt.Errorf("UpdateSource: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("UpdateSource: source %d not found", sourceID)
+		return fmt.Errorf("source %d: %w", sourceID, ErrNotFound)
 	}
 	return nil
 }
@@ -357,7 +368,7 @@ func (p *Postgres) DeleteSource(ctx context.Context, sourceID int64) error {
 		return fmt.Errorf("DeleteSource: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("DeleteSource: source %d not found", sourceID)
+		return fmt.Errorf("source %d: %w", sourceID, ErrNotFound)
 	}
 	return nil
 }
@@ -369,7 +380,7 @@ func (p *Postgres) ToggleChannelFavorite(ctx context.Context, channelID int64, f
 		return fmt.Errorf("ToggleChannelFavorite: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("ToggleChannelFavorite: channel %d not found", channelID)
+		return fmt.Errorf("channel %d: %w", channelID, ErrNotFound)
 	}
 	return nil
 }

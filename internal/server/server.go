@@ -3,11 +3,12 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/voyagen/popcornvault/api"
@@ -124,6 +125,10 @@ func (s *Server) handleAddSource(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("url is required"))
 		return
 	}
+	if u, err := url.ParseRequestURI(req.URL); err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("url must be a valid http or https URL"))
+		return
+	}
 	if req.Name == "" {
 		req.Name = "m3u"
 	}
@@ -149,7 +154,7 @@ func (s *Server) handleGetSource(w http.ResponseWriter, r *http.Request) {
 
 	src, err := s.store.GetSourceByID(r.Context(), sourceID)
 	if err != nil {
-		if strings.Contains(err.Error(), "no rows") {
+		if errors.Is(err, store.ErrNotFound) {
 			writeErr(w, http.StatusNotFound, fmt.Errorf("source %d not found", sourceID))
 			return
 		}
@@ -188,7 +193,7 @@ func (s *Server) handleUpdateSource(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.store.UpdateSource(r.Context(), sourceID, fields); err != nil {
-		if strings.Contains(err.Error(), "not found") {
+		if errors.Is(err, store.ErrNotFound) {
 			writeErr(w, http.StatusNotFound, fmt.Errorf("source %d not found", sourceID))
 			return
 		}
@@ -213,7 +218,7 @@ func (s *Server) handleDeleteSource(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.store.DeleteSource(r.Context(), sourceID); err != nil {
-		if strings.Contains(err.Error(), "not found") {
+		if errors.Is(err, store.ErrNotFound) {
 			writeErr(w, http.StatusNotFound, fmt.Errorf("source %d not found", sourceID))
 			return
 		}
@@ -233,11 +238,16 @@ func (s *Server) handleRefreshSource(w http.ResponseWriter, r *http.Request) {
 
 	src, err := s.store.GetSourceByID(r.Context(), sourceID)
 	if err != nil {
-		if strings.Contains(err.Error(), "no rows") {
+		if errors.Is(err, store.ErrNotFound) {
 			writeErr(w, http.StatusNotFound, fmt.Errorf("source %d not found", sourceID))
 			return
 		}
 		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	if !src.Enabled {
+		writeErr(w, http.StatusConflict, fmt.Errorf("source %d is disabled", sourceID))
 		return
 	}
 
@@ -357,7 +367,7 @@ func (s *Server) handleGetChannel(w http.ResponseWriter, r *http.Request) {
 
 	ch, err := s.store.GetChannelByID(r.Context(), channelID)
 	if err != nil {
-		if strings.Contains(err.Error(), "no rows") {
+		if errors.Is(err, store.ErrNotFound) {
 			writeErr(w, http.StatusNotFound, fmt.Errorf("channel %d not found", channelID))
 			return
 		}
@@ -386,7 +396,7 @@ func (s *Server) handleToggleChannelFavorite(w http.ResponseWriter, r *http.Requ
 	}
 
 	if err := s.store.ToggleChannelFavorite(r.Context(), channelID, req.Favorite); err != nil {
-		if strings.Contains(err.Error(), "not found") {
+		if errors.Is(err, store.ErrNotFound) {
 			writeErr(w, http.StatusNotFound, fmt.Errorf("channel %d not found", channelID))
 			return
 		}

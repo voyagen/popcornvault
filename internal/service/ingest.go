@@ -36,6 +36,12 @@ func Ingest(ctx context.Context, s store.Store, m3uURL string, sourceName string
 
 	groupIDs := make(map[string]int64)
 	for i := range entries {
+		// Check for context cancellation between iterations to allow
+		// graceful shutdown during long ingests.
+		if err := ctx.Err(); err != nil {
+			return sourceID, channelCount, fmt.Errorf("ingest cancelled: %w", err)
+		}
+
 		ch := &entries[i].Channel
 		ch.SourceID = sourceID
 

@@ -2,9 +2,13 @@ package store
 
 import (
 	"context"
+	"errors"
 
 	"github.com/voyagen/popcornvault/internal/models"
 )
+
+// ErrNotFound is returned when a requested resource does not exist.
+var ErrNotFound = errors.New("not found")
 
 // Store defines persistence for sources, channels, groups, and channel headers.
 type Store interface {
