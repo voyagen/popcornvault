@@ -1,6 +1,6 @@
 # PopcornVault
 
-PopcornVault ingests M3U/IPTV playlists into PostgreSQL. It fetches a playlist URL, parses channels and groups (including EXTINF attributes and EXTVLCOPT headers), and stores them as **sources**, **groups**, and **channels**. You can run it as a **one-shot CLI** (ingest and exit) or as a **long-lived HTTP server** with an API to list, search, and refresh content.
+PopcornVault is a local backend for managing M3U/IPTV playlists. It provides a full REST API to add, update, search, and refresh IPTV sources and channels, backed by PostgreSQL. All playlist management happens through the API (or the built-in Swagger UI).
 
 ## Prerequisites
 
@@ -22,7 +22,7 @@ PopcornVault ingests M3U/IPTV playlists into PostgreSQL. It fetches a playlist U
 
 2. **Migrations**
 
-   Migrations run automatically on startup (server mode) or before each ingest (CLI). They are loaded from the `migrations` directory (relative to the current working directory, or next to the binary if not found). Ensure the `migrations` folder is present when you run the app.
+   Migrations run automatically on startup. They are loaded from the `migrations` directory (relative to the current working directory, or next to the binary if not found). Ensure the `migrations` folder is present when you run the app.
 
 3. **Build**
 
@@ -32,85 +32,141 @@ PopcornVault ingests M3U/IPTV playlists into PostgreSQL. It fetches a playlist U
 
 ## Usage
 
-### Server mode (24/7 API)
-
-Run the HTTP server and keep it running:
+Start the server:
 
 ```bash
-./popcornvault -serve
+./popcornvault
 ```
 
-Listens on port 8080 by default (set `SERVER_PORT` to change). Use the API to add sources, list/search channels, and refresh playlists. See [API](#api).
-
-### One-shot ingest (CLI)
-
-Ingest a single playlist and exit:
+Or with a YAML config file:
 
 ```bash
-# Ingest (required: M3U URL)
-./popcornvault "https://example.com/playlist.m3u"
-
-# Optional source name (default: "m3u")
-./popcornvault -name "My IPTV" "https://example.com/playlist.m3u"
-
-# Use a config file instead of env
-./popcornvault -config config.yaml "https://example.com/playlist.m3u"
+./popcornvault -config config.yaml
 ```
 
-Re-running with the same source name updates that source’s URL and re-ingests: existing channels and groups for that source are wiped and replaced.
+Listens on port 8080 by default (set `SERVER_PORT` to change). All API routes are under the `/api` prefix. Interactive API documentation is available at [http://localhost:8080/api/docs](http://localhost:8080/api/docs) (Swagger UI).
 
 ### Flags
 
 | Flag       | Description                                      |
 |------------|--------------------------------------------------|
-| `-serve`   | Run as HTTP server (no M3U URL required).        |
-| `-name`    | Source name for this playlist (default: `m3u`).  |
 | `-config`  | Path to YAML config file (overrides env).        |
 
 ## API
 
-When running with `-serve`, the following endpoints are available.
+All endpoints are prefixed with `/api`.
+
+### Health
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/health` | Liveness check. Returns `{"status":"ok"}`. |
-| GET | `/sources` | List all sources. |
-| POST | `/sources` | Add and ingest a new source. Body: `{"name":"...", "url":"..."}`. |
-| POST | `/sources/{id}/refresh` | Re-fetch the source’s M3U and replace all its channels. |
-| GET | `/channels` | List/search channels. Query: `search`, `source_id`, `group_id`, `limit` (default 50, max 200), `offset`. |
-| GET | `/groups` | List groups. Query: optional `source_id`. |
+| GET | `/api/health` | Liveness check. Returns `{"status":"ok"}`. |
+
+### Sources
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/sources` | List all sources. |
+| POST | `/api/sources` | Add and ingest a new source. Body: `{"name":"...", "url":"..."}`. |
+| GET | `/api/sources/{id}` | Get a single source by ID. |
+| PATCH | `/api/sources/{id}` | Update source fields. Body (all optional): `{"name":"...", "url":"...", "user_agent":"...", "enabled":true}`. |
+| DELETE | `/api/sources/{id}` | Delete a source and cascade-remove its channels and groups. Returns `204`. |
+| POST | `/api/sources/{id}/refresh` | Re-fetch the source's M3U and replace all its channels. |
+
+### Channels
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/channels` | List/search channels. Query params: `search`, `source_id`, `group_id`, `limit` (default 50, max 200), `offset`. |
+| PATCH | `/api/channels/{id}/favorite` | Set or unset a channel as favorite. Body: `{"favorite": true}`. |
+
+### Groups
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/groups` | List groups. Query param: optional `source_id`. |
+
+### Docs
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/docs` | Interactive Swagger UI for the API. |
+| GET | `/api/docs/openapi.yaml` | Raw OpenAPI 3.0 specification. |
+
+### Error responses
+
+All errors return a consistent JSON envelope:
+
+```json
+{
+  "status": 400,
+  "error": "Bad Request",
+  "detail": "invalid source_id: abc"
+}
+```
+
+| Field    | Type   | Description                    |
+|----------|--------|--------------------------------|
+| `status` | int    | HTTP status code.              |
+| `error`  | string | HTTP status text.              |
+| `detail` | string | Human-readable error message.  |
 
 ### Examples
 
 ```bash
 # Health check
-curl http://localhost:8080/health
+curl http://localhost:8080/api/health
 
 # Add a source (fetches and ingests the M3U)
-curl -X POST http://localhost:8080/sources \
+curl -X POST http://localhost:8080/api/sources \
   -H "Content-Type: application/json" \
   -d '{"name":"My IPTV","url":"https://example.com/playlist.m3u"}'
 
 # List sources
-curl http://localhost:8080/sources
+curl http://localhost:8080/api/sources
+
+# Get a single source
+curl http://localhost:8080/api/sources/1
+
+# Update a source
+curl -X PATCH http://localhost:8080/api/sources/1 \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Renamed Source","enabled":false}'
+
+# Delete a source
+curl -X DELETE http://localhost:8080/api/sources/1
 
 # Refresh a source (re-fetch, update all channels)
-curl -X POST http://localhost:8080/sources/1/refresh
+curl -X POST http://localhost:8080/api/sources/1/refresh
 
 # List channels (paginated)
-curl "http://localhost:8080/channels?limit=50&offset=0"
+curl "http://localhost:8080/api/channels?limit=50&offset=0"
 
 # Search channels by name
-curl "http://localhost:8080/channels?search=batman"
+curl "http://localhost:8080/api/channels?search=batman"
 
 # Filter by source and group
-curl "http://localhost:8080/channels?source_id=1&group_id=3"
+curl "http://localhost:8080/api/channels?source_id=1&group_id=3"
+
+# Favorite a channel
+curl -X PATCH http://localhost:8080/api/channels/42/favorite \
+  -H "Content-Type: application/json" \
+  -d '{"favorite":true}'
 
 # List groups (optionally for one source)
-curl "http://localhost:8080/groups?source_id=1"
+curl "http://localhost:8080/api/groups?source_id=1"
 ```
 
-Channels response shape: `{"channels": [...], "total": N, "limit": 50, "offset": 0}`.
+Channels response shape:
+
+```json
+{
+  "channels": [],
+  "total": 0,
+  "limit": 50,
+  "offset": 0
+}
+```
 
 ## Configuration
 
@@ -145,12 +201,29 @@ See `config.example.yaml` in the repo. Config file values override environment v
 
 ## Schema (overview)
 
-- **sources** — One per M3U URL (name, url, user_agent, last_updated, etc.).
-- **groups** — Categories per source (e.g. `group-title` from M3U).
-- **channels** — One per stream (name, url, media_type, group_id, source_id, favorite).
-- **channel_http_headers** — Optional HTTP headers per channel (from EXTVLCOPT: referrer, user-agent, origin).
+- **sources** -- One per M3U URL (name, url, user_agent, last_updated, etc.).
+- **groups** -- Categories per source (e.g. `group-title` from M3U).
+- **channels** -- One per stream (name, url, media_type, group_id, source_id, favorite).
+- **channel_http_headers** -- Optional HTTP headers per channel (from EXTVLCOPT: referrer, user-agent, origin).
 
-Migrations are in `migrations/`. They run automatically on server start or before each CLI ingest.
+Migrations are in `migrations/`. They run automatically on server start.
+
+## Project structure
+
+```
+cmd/popcornvault/     Entry point (server startup)
+internal/
+  config/             Configuration loading (env, YAML, .env files)
+  fetcher/            M3U fetching and parsing
+  models/             Domain types (Source, Channel, Group, etc.)
+  server/             HTTP server, route handlers, Swagger UI
+  service/            Business logic (ingest orchestration)
+  store/              Database interface and Postgres implementation
+api/
+  openapi.yaml        OpenAPI 3.0 specification
+  embed.go            Embeds the spec into the binary
+migrations/           SQL migration files (auto-applied on startup)
+```
 
 ## License
 

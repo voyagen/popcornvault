@@ -26,10 +26,18 @@ type Store interface {
 	// GetSourceByID returns a single source by id.
 	GetSourceByID(ctx context.Context, sourceID int64) (*models.Source, error)
 
+	// UpdateSource updates mutable fields of a source.
+	UpdateSource(ctx context.Context, sourceID int64, fields SourceUpdate) error
+	// DeleteSource deletes a source and cascades to channels/groups (via ON DELETE CASCADE).
+	DeleteSource(ctx context.Context, sourceID int64) error
+
 	// ListChannels returns channels matching the filter and the total count (before limit/offset).
 	ListChannels(ctx context.Context, filter ChannelFilter) ([]models.Channel, int, error)
 	// ListGroups returns groups, optionally filtered by source id.
 	ListGroups(ctx context.Context, sourceID *int64) ([]models.Group, error)
+
+	// ToggleChannelFavorite sets the favorite flag on a channel.
+	ToggleChannelFavorite(ctx context.Context, channelID int64, favorite bool) error
 }
 
 // ChannelFilter holds optional filters for listing channels.
@@ -39,4 +47,13 @@ type ChannelFilter struct {
 	Search   string // case-insensitive substring match on channel name
 	Limit    int    // default 50, max 200
 	Offset   int
+}
+
+// SourceUpdate holds mutable fields for PATCH /sources/{id}.
+// Pointer fields: nil = don't change, non-nil = set.
+type SourceUpdate struct {
+	Name      *string
+	URL       *string
+	UserAgent *string
+	Enabled   *bool
 }

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/voyagen/popcornvault/api"
 	"github.com/voyagen/popcornvault/internal/config"
 	"github.com/voyagen/popcornvault/internal/models"
 	"github.com/voyagen/popcornvault/internal/service"
@@ -31,12 +32,26 @@ func New(s store.Store, cfg *config.Config) *Server {
 }
 
 func (s *Server) routes() {
-	s.mux.HandleFunc("GET /health", s.handleHealth)
-	s.mux.HandleFunc("GET /sources", s.handleListSources)
-	s.mux.HandleFunc("POST /sources", s.handleAddSource)
-	s.mux.HandleFunc("POST /sources/{id}/refresh", s.handleRefreshSource)
-	s.mux.HandleFunc("GET /channels", s.handleListChannels)
-	s.mux.HandleFunc("GET /groups", s.handleListGroups)
+	s.mux.HandleFunc("GET /api/health", s.handleHealth)
+
+	// Sources
+	s.mux.HandleFunc("GET /api/sources", s.handleListSources)
+	s.mux.HandleFunc("POST /api/sources", s.handleAddSource)
+	s.mux.HandleFunc("GET /api/sources/{id}", s.handleGetSource)
+	s.mux.HandleFunc("PATCH /api/sources/{id}", s.handleUpdateSource)
+	s.mux.HandleFunc("DELETE /api/sources/{id}", s.handleDeleteSource)
+	s.mux.HandleFunc("POST /api/sources/{id}/refresh", s.handleRefreshSource)
+
+	// Channels
+	s.mux.HandleFunc("GET /api/channels", s.handleListChannels)
+	s.mux.HandleFunc("PATCH /api/channels/{id}/favorite", s.handleToggleChannelFavorite)
+
+	// Groups
+	s.mux.HandleFunc("GET /api/groups", s.handleListGroups)
+
+	// Docs
+	s.mux.HandleFunc("GET /api/docs", handleSwaggerUI)
+	s.mux.HandleFunc("GET /api/docs/openapi.yaml", handleOpenAPISpec)
 }
 
 // ServeHTTP implements http.Handler.
@@ -78,6 +93,8 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
+
+// --- source handlers ---
 
 func (s *Server) handleListSources(w http.ResponseWriter, r *http.Request) {
 	sources, err := s.store.ListSources(r.Context())
@@ -122,11 +139,94 @@ func (s *Server) handleAddSource(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) handleRefreshSource(w http.ResponseWriter, r *http.Request) {
-	idStr := r.PathValue("id")
-	sourceID, err := strconv.ParseInt(idStr, 10, 64)
+func (s *Server) handleGetSource(w http.ResponseWriter, r *http.Request) {
+	sourceID, err := parseID(r, "id")
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid source id: %s", idStr))
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+
+	src, err := s.store.GetSourceByID(r.Context(), sourceID)
+	if err != nil {
+		if strings.Contains(err.Error(), "no rows") {
+			writeErr(w, http.StatusNotFound, fmt.Errorf("source %d not found", sourceID))
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, src)
+}
+
+type updateSourceRequest struct {
+	Name      *string `json:"name"`
+	URL       *string `json:"url"`
+	UserAgent *string `json:"user_agent"`
+	Enabled   *bool   `json:"enabled"`
+}
+
+func (s *Server) handleUpdateSource(w http.ResponseWriter, r *http.Request) {
+	sourceID, err := parseID(r, "id")
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+
+	var req updateSourceRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid JSON: %w", err))
+		return
+	}
+
+	fields := store.SourceUpdate{
+		Name:      req.Name,
+		URL:       req.URL,
+		UserAgent: req.UserAgent,
+		Enabled:   req.Enabled,
+	}
+
+	if err := s.store.UpdateSource(r.Context(), sourceID, fields); err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			writeErr(w, http.StatusNotFound, fmt.Errorf("source %d not found", sourceID))
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	// Return the updated source.
+	src, err := s.store.GetSourceByID(r.Context(), sourceID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, src)
+}
+
+func (s *Server) handleDeleteSource(w http.ResponseWriter, r *http.Request) {
+	sourceID, err := parseID(r, "id")
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+
+	if err := s.store.DeleteSource(r.Context(), sourceID); err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			writeErr(w, http.StatusNotFound, fmt.Errorf("source %d not found", sourceID))
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	writeNoContent(w)
+}
+
+func (s *Server) handleRefreshSource(w http.ResponseWriter, r *http.Request) {
+	sourceID, err := parseID(r, "id")
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
 
@@ -157,6 +257,8 @@ func (s *Server) handleRefreshSource(w http.ResponseWriter, r *http.Request) {
 		"refreshed":     true,
 	})
 }
+
+// --- channel handlers ---
 
 func (s *Server) handleListChannels(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
@@ -223,6 +325,40 @@ func (s *Server) handleListChannels(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+type toggleFavoriteRequest struct {
+	Favorite bool `json:"favorite"`
+}
+
+func (s *Server) handleToggleChannelFavorite(w http.ResponseWriter, r *http.Request) {
+	channelID, err := parseID(r, "id")
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+
+	var req toggleFavoriteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid JSON: %w", err))
+		return
+	}
+
+	if err := s.store.ToggleChannelFavorite(r.Context(), channelID, req.Favorite); err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			writeErr(w, http.StatusNotFound, fmt.Errorf("channel %d not found", channelID))
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"channel_id": channelID,
+		"favorite":   req.Favorite,
+	})
+}
+
+// --- group handlers ---
+
 func (s *Server) handleListGroups(w http.ResponseWriter, r *http.Request) {
 	var sourceID *int64
 	if v := r.URL.Query().Get("source_id"); v != "" {
@@ -247,6 +383,23 @@ func (s *Server) handleListGroups(w http.ResponseWriter, r *http.Request) {
 
 // --- helpers ---
 
+// APIError is the standard error envelope for all error responses.
+type APIError struct {
+	Status int    `json:"status"`
+	Error  string `json:"error"`
+	Detail string `json:"detail,omitempty"`
+}
+
+// parseID extracts a path parameter by name and parses it as int64.
+func parseID(r *http.Request, param string) (int64, error) {
+	v := r.PathValue(param)
+	id, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s: %s", param, v)
+	}
+	return id, nil
+}
+
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -255,6 +408,50 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	}
 }
 
-func writeErr(w http.ResponseWriter, status int, err error) {
-	writeJSON(w, status, map[string]string{"error": err.Error()})
+func writeNoContent(w http.ResponseWriter) {
+	w.WriteHeader(http.StatusNoContent)
 }
+
+func writeErr(w http.ResponseWriter, status int, err error) {
+	writeJSON(w, status, APIError{
+		Status: status,
+		Error:  http.StatusText(status),
+		Detail: err.Error(),
+	})
+}
+
+// --- docs handlers ---
+
+func handleOpenAPISpec(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/yaml")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(api.OpenAPISpec)
+}
+
+func handleSwaggerUI(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = fmt.Fprint(w, swaggerUIHTML)
+}
+
+const swaggerUIHTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>PopcornVault API Docs</title>
+  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css">
+  <style>html{box-sizing:border-box;overflow-y:scroll}*,*:before,*:after{box-sizing:inherit}body{margin:0;background:#fafafa}</style>
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+  <script>
+    SwaggerUIBundle({
+      url: "/api/docs/openapi.yaml",
+      dom_id: "#swagger-ui",
+      presets: [SwaggerUIBundle.presets.apis, SwaggerUIBundle.SwaggerUIStandalonePreset],
+      layout: "BaseLayout",
+    });
+  </script>
+</body>
+</html>`

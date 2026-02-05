@@ -279,3 +279,72 @@ func (p *Postgres) GetSourceByID(ctx context.Context, sourceID int64) (*models.S
 	}
 	return &s, nil
 }
+
+// UpdateSource updates mutable fields of a source. Only non-nil fields in SourceUpdate are applied.
+func (p *Postgres) UpdateSource(ctx context.Context, sourceID int64, fields SourceUpdate) error {
+	setClauses := []string{}
+	args := []any{}
+	idx := 1
+
+	if fields.Name != nil {
+		setClauses = append(setClauses, fmt.Sprintf("name = $%d", idx))
+		args = append(args, *fields.Name)
+		idx++
+	}
+	if fields.URL != nil {
+		setClauses = append(setClauses, fmt.Sprintf("url = $%d", idx))
+		args = append(args, *fields.URL)
+		idx++
+	}
+	if fields.UserAgent != nil {
+		setClauses = append(setClauses, fmt.Sprintf("user_agent = $%d", idx))
+		args = append(args, *fields.UserAgent)
+		idx++
+	}
+	if fields.Enabled != nil {
+		setClauses = append(setClauses, fmt.Sprintf("enabled = $%d", idx))
+		args = append(args, *fields.Enabled)
+		idx++
+	}
+
+	if len(setClauses) == 0 {
+		return nil // nothing to update
+	}
+
+	query := fmt.Sprintf("UPDATE sources SET %s WHERE id = $%d",
+		strings.Join(setClauses, ", "), idx)
+	args = append(args, sourceID)
+
+	tag, err := p.pool.Exec(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("UpdateSource: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("UpdateSource: source %d not found", sourceID)
+	}
+	return nil
+}
+
+// DeleteSource deletes a source by id. Related channels and groups are removed via ON DELETE CASCADE.
+func (p *Postgres) DeleteSource(ctx context.Context, sourceID int64) error {
+	tag, err := p.pool.Exec(ctx, "DELETE FROM sources WHERE id = $1", sourceID)
+	if err != nil {
+		return fmt.Errorf("DeleteSource: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("DeleteSource: source %d not found", sourceID)
+	}
+	return nil
+}
+
+// ToggleChannelFavorite sets the favorite flag on a channel.
+func (p *Postgres) ToggleChannelFavorite(ctx context.Context, channelID int64, favorite bool) error {
+	tag, err := p.pool.Exec(ctx, "UPDATE channels SET favorite = $1 WHERE id = $2", favorite, channelID)
+	if err != nil {
+		return fmt.Errorf("ToggleChannelFavorite: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("ToggleChannelFavorite: channel %d not found", channelID)
+	}
+	return nil
+}
