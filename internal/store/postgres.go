@@ -156,6 +156,21 @@ func (p *Postgres) ListSources(ctx context.Context) ([]models.Source, error) {
 	return sources, rows.Err()
 }
 
+// GetChannelByID returns a single channel by id with group name joined.
+func (p *Postgres) GetChannelByID(ctx context.Context, channelID int64) (*models.Channel, error) {
+	var ch models.Channel
+	err := p.pool.QueryRow(ctx,
+		`SELECT c.id, c.name, c.image, c.url, c.media_type, c.source_id, c.group_id, c.favorite, g.name
+		 FROM channels c
+		 LEFT JOIN groups g ON c.group_id = g.id
+		 WHERE c.id = $1`, channelID,
+	).Scan(&ch.ID, &ch.Name, &ch.Image, &ch.URL, &ch.MediaType, &ch.SourceID, &ch.GroupID, &ch.Favorite, &ch.GroupName)
+	if err != nil {
+		return nil, fmt.Errorf("GetChannelByID: %w", err)
+	}
+	return &ch, nil
+}
+
 // ListChannels returns channels matching the filter and total count (before limit/offset).
 func (p *Postgres) ListChannels(ctx context.Context, filter ChannelFilter) ([]models.Channel, int, error) {
 	// Apply defaults.
@@ -187,6 +202,11 @@ func (p *Postgres) ListChannels(ctx context.Context, filter ChannelFilter) ([]mo
 	if filter.MediaType != nil {
 		where = append(where, fmt.Sprintf("c.media_type = $%d", argIdx))
 		args = append(args, *filter.MediaType)
+		argIdx++
+	}
+	if filter.Favorite != nil {
+		where = append(where, fmt.Sprintf("c.favorite = $%d", argIdx))
+		args = append(args, *filter.Favorite)
 		argIdx++
 	}
 	if filter.Search != "" {

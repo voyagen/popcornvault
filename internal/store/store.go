@@ -31,6 +31,8 @@ type Store interface {
 	// DeleteSource deletes a source and cascades to channels/groups (via ON DELETE CASCADE).
 	DeleteSource(ctx context.Context, sourceID int64) error
 
+	// GetChannelByID returns a single channel by id (with group name joined).
+	GetChannelByID(ctx context.Context, channelID int64) (*models.Channel, error)
 	// ListChannels returns channels matching the filter and the total count (before limit/offset).
 	ListChannels(ctx context.Context, filter ChannelFilter) ([]models.Channel, int, error)
 	// ListGroups returns groups, optionally filtered by source id.
@@ -45,6 +47,7 @@ type ChannelFilter struct {
 	SourceID  *int64
 	GroupID   *int64
 	MediaType *int16 // 0 = Livestream, 1 = Movie, 2 = Serie
+	Favorite  *bool  // filter by favorite status
 	Search    string // case-insensitive substring match on channel name
 	Limit     int    // default 50, max 200
 	Offset    int

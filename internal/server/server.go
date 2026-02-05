@@ -44,6 +44,7 @@ func (s *Server) routes() {
 
 	// Channels
 	s.mux.HandleFunc("GET /api/channels", s.handleListChannels)
+	s.mux.HandleFunc("GET /api/channels/{id}", s.handleGetChannel)
 	s.mux.HandleFunc("PATCH /api/channels/{id}/favorite", s.handleToggleChannelFavorite)
 
 	// Groups
@@ -65,7 +66,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	addr := ":" + s.cfg.ServerPort
 	httpServer := &http.Server{
 		Addr:         addr,
-		Handler:      withLogging(s),
+		Handler:      withCORS(withLogging(s)),
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Minute,
 		IdleTimeout:  120 * time.Second,
@@ -292,6 +293,19 @@ func (s *Server) handleListChannels(w http.ResponseWriter, r *http.Request) {
 		mt := int16(n)
 		filter.MediaType = &mt
 	}
+	if v := q.Get("favorite"); v != "" {
+		switch v {
+		case "true", "1":
+			fav := true
+			filter.Favorite = &fav
+		case "false", "0":
+			fav := false
+			filter.Favorite = &fav
+		default:
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid favorite: %s (use true or false)", v))
+			return
+		}
+	}
 	if v := q.Get("limit"); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil {
@@ -332,6 +346,26 @@ func (s *Server) handleListChannels(w http.ResponseWriter, r *http.Request) {
 		"limit":    filter.Limit,
 		"offset":   filter.Offset,
 	})
+}
+
+func (s *Server) handleGetChannel(w http.ResponseWriter, r *http.Request) {
+	channelID, err := parseID(r, "id")
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+
+	ch, err := s.store.GetChannelByID(r.Context(), channelID)
+	if err != nil {
+		if strings.Contains(err.Error(), "no rows") {
+			writeErr(w, http.StatusNotFound, fmt.Errorf("channel %d not found", channelID))
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, ch)
 }
 
 type toggleFavoriteRequest struct {
@@ -391,6 +425,23 @@ func (s *Server) handleListGroups(w http.ResponseWriter, r *http.Request) {
 }
 
 // --- middleware ---
+
+// withCORS adds CORS headers to every response and handles preflight OPTIONS requests.
+func withCORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		w.Header().Set("Access-Control-Max-Age", "86400")
+
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
 
 // statusWriter wraps http.ResponseWriter to capture the status code.
 type statusWriter struct {

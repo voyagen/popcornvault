@@ -175,6 +175,11 @@ paths:
           schema:
             type: integer
             enum: [0, 1, 2]
+        - name: favorite
+          in: query
+          description: Filter by favorite status (true or false)
+          schema:
+            type: boolean
         - name: limit
           in: query
           description: "Max items to return (default: 50, max: 200)"
@@ -197,6 +202,34 @@ paths:
                 $ref: "#/components/schemas/ChannelListResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/channels/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Channel ID
+        schema:
+          type: integer
+          format: int64
+
+    get:
+      operationId: getChannel
+      summary: Get a single channel by ID
+      tags: [Channels]
+      responses:
+        "200":
+          description: Channel detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Channel"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalError"
 

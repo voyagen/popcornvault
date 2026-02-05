@@ -77,7 +77,8 @@ All endpoints are prefixed with `/api`.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/channels` | List/search channels. Query params: `search`, `source_id`, `group_id`, `media_type` (0=Live, 1=Movie, 2=Serie), `limit` (default 50, max 200), `offset`. |
+| GET | `/api/channels` | List/search channels. Query params: `search`, `source_id`, `group_id`, `media_type` (0=Live, 1=Movie, 2=Serie), `favorite` (true/false), `limit` (default 50, max 200), `offset`. |
+| GET | `/api/channels/{id}` | Get a single channel by ID. |
 | PATCH | `/api/channels/{id}/favorite` | Set or unset a channel as favorite. Body: `{"favorite": true}`. |
 
 ### Groups
@@ -150,6 +151,12 @@ curl "http://localhost:8080/api/channels?source_id=1&group_id=3"
 
 # Filter by media type (0=Live, 1=Movie, 2=Serie)
 curl "http://localhost:8080/api/channels?media_type=1"
+
+# List favorites only
+curl "http://localhost:8080/api/channels?favorite=true"
+
+# Get a single channel
+curl http://localhost:8080/api/channels/42
 
 # Favorite a channel
 curl -X PATCH http://localhost:8080/api/channels/42/favorite \
