@@ -50,29 +50,41 @@ func (p *Postgres) CreateOrGetSource(ctx context.Context, name, url string, sour
 	return id, nil
 }
 
-// WipeSourceChannels deletes all channels (and their headers) for the source, and groups for the source.
-// All deletes run inside a single transaction to avoid partial state on failure.
-func (p *Postgres) WipeSourceChannels(ctx context.Context, sourceID int64) error {
-	tx, err := p.pool.Begin(ctx)
+// RemoveStaleChannels deletes channels (and their headers via CASCADE) for the
+// source whose IDs are NOT in keepIDs. This is used during refresh to prune
+// channels that no longer exist in the upstream M3U without touching favourites
+// or other user data on channels that still exist.
+func (p *Postgres) RemoveStaleChannels(ctx context.Context, sourceID int64, keepIDs []int64) error {
+	if len(keepIDs) == 0 {
+		// Nothing to keep — delete every channel for this source.
+		_, err := p.pool.Exec(ctx,
+			`DELETE FROM channels WHERE source_id = $1`, sourceID)
+		if err != nil {
+			return fmt.Errorf("RemoveStaleChannels (all): %w", err)
+		}
+		return nil
+	}
+
+	_, err := p.pool.Exec(ctx,
+		`DELETE FROM channels WHERE source_id = $1 AND id != ALL($2)`,
+		sourceID, keepIDs)
 	if err != nil {
-		return fmt.Errorf("WipeSourceChannels begin tx: %w", err)
+		return fmt.Errorf("RemoveStaleChannels: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	return nil
+}
 
-	if _, err := tx.Exec(ctx,
-		`DELETE FROM channel_http_headers WHERE channel_id IN (SELECT id FROM channels WHERE source_id = $1)`,
-		sourceID,
-	); err != nil {
-		return fmt.Errorf("delete channel_http_headers: %w", err)
+// RemoveOrphanedGroups deletes groups for the source that have no remaining channels.
+func (p *Postgres) RemoveOrphanedGroups(ctx context.Context, sourceID int64) error {
+	_, err := p.pool.Exec(ctx,
+		`DELETE FROM groups
+		 WHERE source_id = $1
+		   AND id NOT IN (SELECT DISTINCT group_id FROM channels WHERE source_id = $1 AND group_id IS NOT NULL)`,
+		sourceID)
+	if err != nil {
+		return fmt.Errorf("RemoveOrphanedGroups: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `DELETE FROM channels WHERE source_id = $1`, sourceID); err != nil {
-		return fmt.Errorf("delete channels: %w", err)
-	}
-	if _, err := tx.Exec(ctx, `DELETE FROM groups WHERE source_id = $1`, sourceID); err != nil {
-		return fmt.Errorf("delete groups: %w", err)
-	}
-
-	return tx.Commit(ctx)
+	return nil
 }
 
 // GetOrCreateGroup returns group id for name/sourceID.

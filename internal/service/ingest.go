@@ -11,6 +11,8 @@ import (
 )
 
 // Ingest fetches an M3U URL, parses it, and stores sources and channels.
+// Existing channels are updated in place (preserving user data like favorites).
+// Channels that no longer appear in the M3U are removed, and new ones are added.
 // sourceName is optional; if empty, a default name is derived (e.g. from URL or "m3u").
 func Ingest(ctx context.Context, s store.Store, m3uURL string, sourceName string, userAgent string, timeout time.Duration, useTvgID bool) (sourceID int64, channelCount int, err error) {
 	if m3uURL == "" {
@@ -30,11 +32,11 @@ func Ingest(ctx context.Context, s store.Store, m3uURL string, sourceName string
 		return 0, 0, fmt.Errorf("CreateOrGetSource: %w", err)
 	}
 
-	if err := s.WipeSourceChannels(ctx, sourceID); err != nil {
-		return 0, 0, fmt.Errorf("WipeSourceChannels: %w", err)
-	}
-
+	// Upsert all channels from the M3U and track their IDs so we can prune
+	// stale entries afterwards.
+	keepIDs := make([]int64, 0, len(entries))
 	groupIDs := make(map[string]int64)
+
 	for i := range entries {
 		// Check for context cancellation between iterations to allow
 		// graceful shutdown during long ingests.
@@ -63,12 +65,24 @@ func Ingest(ctx context.Context, s store.Store, m3uURL string, sourceName string
 		if err != nil {
 			return 0, 0, fmt.Errorf("UpsertChannel: %w", err)
 		}
+		keepIDs = append(keepIDs, cid)
+
 		if entries[i].Headers != nil {
 			if err := s.UpsertChannelHeaders(ctx, cid, entries[i].Headers); err != nil {
 				return 0, 0, fmt.Errorf("UpsertChannelHeaders: %w", err)
 			}
 		}
 		channelCount++
+	}
+
+	// Remove channels that are no longer present in the upstream M3U.
+	if err := s.RemoveStaleChannels(ctx, sourceID, keepIDs); err != nil {
+		return sourceID, channelCount, fmt.Errorf("RemoveStaleChannels: %w", err)
+	}
+
+	// Clean up groups that lost all their channels.
+	if err := s.RemoveOrphanedGroups(ctx, sourceID); err != nil {
+		return sourceID, channelCount, fmt.Errorf("RemoveOrphanedGroups: %w", err)
 	}
 
 	if err := s.UpdateSourceLastUpdated(ctx, sourceID); err != nil {
