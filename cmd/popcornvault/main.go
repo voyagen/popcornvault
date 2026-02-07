@@ -10,6 +10,7 @@ import (
 	"syscall"
 
 	"github.com/voyagen/popcornvault/internal/config"
+	"github.com/voyagen/popcornvault/internal/embedding"
 	"github.com/voyagen/popcornvault/internal/server"
 	"github.com/voyagen/popcornvault/internal/store"
 )
@@ -42,6 +43,12 @@ func main() {
 			absMigrations = filepath.Join(filepath.Dir(exe), "migrations")
 		}
 	}
+	// Ensure pgvector extension exists before running migrations.
+	if err := store.EnsurePgvector(cfg.DatabaseURL); err != nil {
+		fmt.Fprintf(os.Stderr, "pgvector: %v\n", err)
+		os.Exit(1)
+	}
+
 	migrationsPath := "file://" + absMigrations
 	if err := store.RunMigrations(cfg.DatabaseURL, migrationsPath); err != nil {
 		fmt.Fprintf(os.Stderr, "migrate: %v\n", err)
@@ -55,10 +62,19 @@ func main() {
 	}
 	defer pg.Close()
 
+	// Create embedding client if VOYAGE_API_KEY is configured.
+	var embedder *embedding.Client
+	if cfg.VoyageAPIKey != "" {
+		embedder = embedding.NewClient(cfg.VoyageAPIKey, cfg.VoyageModel)
+		fmt.Fprintln(os.Stderr, "semantic search enabled (VoyageAI)")
+	} else {
+		fmt.Fprintln(os.Stderr, "semantic search disabled (VOYAGE_API_KEY not set)")
+	}
+
 	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	srv := server.New(pg, cfg)
+	srv := server.New(pg, cfg, embedder)
 	if err := srv.ListenAndServe(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "server: %v\n", err)
 		os.Exit(1)

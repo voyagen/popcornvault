@@ -146,6 +146,69 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /api/channels/search:
+    get:
+      operationId: searchChannels
+      summary: Semantic search for channels using AI embeddings
+      description: >
+        Search for channels using natural language queries. Requires VOYAGE_API_KEY to be configured.
+        Returns channels ranked by cosine similarity to the query embedding.
+      tags: [Channels]
+      parameters:
+        - name: q
+          in: query
+          required: true
+          description: Natural language search query
+          schema:
+            type: string
+        - name: source_id
+          in: query
+          description: Filter by source ID
+          schema:
+            type: integer
+            format: int64
+        - name: group_id
+          in: query
+          description: Filter by group ID
+          schema:
+            type: integer
+            format: int64
+        - name: media_type
+          in: query
+          description: "Filter by media type (0 = Livestream, 1 = Movie, 2 = Serie)"
+          schema:
+            type: integer
+            enum: [0, 1, 2]
+        - name: favorite
+          in: query
+          description: Filter by favorite status (true or false)
+          schema:
+            type: boolean
+        - name: limit
+          in: query
+          description: "Max results to return (default: 20, max: 200)"
+          schema:
+            type: integer
+            default: 20
+            maximum: 200
+      responses:
+        "200":
+          description: Channels ranked by semantic similarity
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SemanticSearchResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "503":
+          description: Semantic search not configured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /api/channels:
     get:
       operationId: listChannels
@@ -466,6 +529,26 @@ components:
           type: integer
         offset:
           type: integer
+
+    SemanticSearchResponse:
+      type: object
+      properties:
+        channels:
+          type: array
+          items:
+            $ref: "#/components/schemas/SemanticResult"
+        limit:
+          type: integer
+
+    SemanticResult:
+      type: object
+      properties:
+        channel:
+          $ref: "#/components/schemas/Channel"
+        similarity:
+          type: number
+          format: double
+          description: "Cosine similarity score (0 to 1, higher is more similar)"
 
   responses:
     BadRequest:

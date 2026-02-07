@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	pgvector "github.com/pgvector/pgvector-go"
 	"github.com/voyagen/popcornvault/internal/models"
 )
 
@@ -54,37 +55,107 @@ func (p *Postgres) CreateOrGetSource(ctx context.Context, name, url string, sour
 // source whose IDs are NOT in keepIDs. This is used during refresh to prune
 // channels that no longer exist in the upstream M3U without touching favourites
 // or other user data on channels that still exist.
-func (p *Postgres) RemoveStaleChannels(ctx context.Context, sourceID int64, keepIDs []int64) error {
+// Returns the number of deleted channels.
+//
+// For large channel counts, uses a temporary table instead of an array parameter
+// to avoid PostgreSQL performance issues with huge ANY/ALL arrays.
+func (p *Postgres) RemoveStaleChannels(ctx context.Context, sourceID int64, keepIDs []int64) (int64, error) {
 	if len(keepIDs) == 0 {
 		// Nothing to keep — delete every channel for this source.
-		_, err := p.pool.Exec(ctx,
+		tag, err := p.pool.Exec(ctx,
 			`DELETE FROM channels WHERE source_id = $1`, sourceID)
 		if err != nil {
-			return fmt.Errorf("RemoveStaleChannels (all): %w", err)
+			return 0, fmt.Errorf("RemoveStaleChannels (all): %w", err)
 		}
-		return nil
+		return tag.RowsAffected(), nil
 	}
 
-	_, err := p.pool.Exec(ctx,
-		`DELETE FROM channels WHERE source_id = $1 AND id != ALL($2)`,
-		sourceID, keepIDs)
+	// Use a transaction with a temp table for efficient bulk exclusion.
+	tx, err := p.pool.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("RemoveStaleChannels: %w", err)
+		return 0, fmt.Errorf("RemoveStaleChannels begin: %w", err)
 	}
+	defer tx.Rollback(ctx)
+
+	// Drop any leftover temp table from a previous session on this connection,
+	// then create a fresh one without constraints for fast COPY inserts.
+	if _, err := tx.Exec(ctx, `DROP TABLE IF EXISTS _keep_ids`); err != nil {
+		return 0, fmt.Errorf("RemoveStaleChannels drop temp: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `CREATE TEMP TABLE _keep_ids (id BIGINT) ON COMMIT DROP`); err != nil {
+		return 0, fmt.Errorf("RemoveStaleChannels create temp: %w", err)
+	}
+
+	// Bulk-insert keepIDs using COPY for speed.
+	_, err = tx.CopyFrom(
+		ctx,
+		pgx.Identifier{"_keep_ids"},
+		[]string{"id"},
+		&int64CopySource{ids: keepIDs},
+	)
+	if err != nil {
+		return 0, fmt.Errorf("RemoveStaleChannels copy: %w", err)
+	}
+
+	// Index after bulk insert is faster than maintaining an index during COPY.
+	if _, err := tx.Exec(ctx, `CREATE INDEX ON _keep_ids (id)`); err != nil {
+		return 0, fmt.Errorf("RemoveStaleChannels index temp: %w", err)
+	}
+
+	// Analyze the temp table so the planner picks a good join strategy.
+	if _, err := tx.Exec(ctx, `ANALYZE _keep_ids`); err != nil {
+		return 0, fmt.Errorf("RemoveStaleChannels analyze temp: %w", err)
+	}
+
+	// Delete channels not in the keep set.
+	tag, err := tx.Exec(ctx,
+		`DELETE FROM channels c
+		 WHERE c.source_id = $1
+		   AND NOT EXISTS (SELECT 1 FROM _keep_ids k WHERE k.id = c.id)`,
+		sourceID)
+	if err != nil {
+		return 0, fmt.Errorf("RemoveStaleChannels delete: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("RemoveStaleChannels commit: %w", err)
+	}
+
+	return tag.RowsAffected(), nil
+}
+
+// int64CopySource implements pgx.CopyFromSource for a slice of int64 values.
+type int64CopySource struct {
+	ids []int64
+	idx int
+}
+
+func (s *int64CopySource) Next() bool {
+	return s.idx < len(s.ids)
+}
+
+func (s *int64CopySource) Values() ([]any, error) {
+	v := s.ids[s.idx]
+	s.idx++
+	return []any{v}, nil
+}
+
+func (s *int64CopySource) Err() error {
 	return nil
 }
 
 // RemoveOrphanedGroups deletes groups for the source that have no remaining channels.
-func (p *Postgres) RemoveOrphanedGroups(ctx context.Context, sourceID int64) error {
-	_, err := p.pool.Exec(ctx,
+// Returns the number of deleted groups.
+func (p *Postgres) RemoveOrphanedGroups(ctx context.Context, sourceID int64) (int64, error) {
+	tag, err := p.pool.Exec(ctx,
 		`DELETE FROM groups
 		 WHERE source_id = $1
 		   AND id NOT IN (SELECT DISTINCT group_id FROM channels WHERE source_id = $1 AND group_id IS NOT NULL)`,
 		sourceID)
 	if err != nil {
-		return fmt.Errorf("RemoveOrphanedGroups: %w", err)
+		return 0, fmt.Errorf("RemoveOrphanedGroups: %w", err)
 	}
-	return nil
+	return tag.RowsAffected(), nil
 }
 
 // GetOrCreateGroup returns group id for name/sourceID.
@@ -395,4 +466,153 @@ func (p *Postgres) ToggleChannelFavorite(ctx context.Context, channelID int64, f
 		return fmt.Errorf("channel %d: %w", channelID, ErrNotFound)
 	}
 	return nil
+}
+
+// CountChannelsBySource returns the total number of channels for a source.
+func (p *Postgres) CountChannelsBySource(ctx context.Context, sourceID int64) (int64, error) {
+	var count int64
+	err := p.pool.QueryRow(ctx, `SELECT COUNT(*) FROM channels WHERE source_id = $1`, sourceID).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("CountChannelsBySource: %w", err)
+	}
+	return count, nil
+}
+
+// StoreEmbeddings batch-updates the embedding column for the given channel IDs.
+// Sends updates in chunks of 5,000 to avoid overwhelming PostgreSQL.
+func (p *Postgres) StoreEmbeddings(ctx context.Context, channelIDs []int64, embeddings [][]float32) error {
+	if len(channelIDs) != len(embeddings) {
+		return fmt.Errorf("StoreEmbeddings: channelIDs length (%d) != embeddings length (%d)", len(channelIDs), len(embeddings))
+	}
+
+	const chunkSize = 5000
+	total := len(channelIDs)
+
+	for start := 0; start < total; start += chunkSize {
+		end := start + chunkSize
+		if end > total {
+			end = total
+		}
+
+		batch := &pgx.Batch{}
+		for i := start; i < end; i++ {
+			vec := pgvector.NewVector(embeddings[i])
+			batch.Queue("UPDATE channels SET embedding = $1 WHERE id = $2", vec, channelIDs[i])
+		}
+
+		br := p.pool.SendBatch(ctx, batch)
+		for i := start; i < end; i++ {
+			if _, err := br.Exec(); err != nil {
+				br.Close()
+				return fmt.Errorf("StoreEmbeddings id=%d: %w", channelIDs[i], err)
+			}
+		}
+		br.Close()
+	}
+	return nil
+}
+
+// SemanticSearch returns channels ordered by cosine similarity to queryVec.
+func (p *Postgres) SemanticSearch(ctx context.Context, queryVec []float32, filter ChannelFilter) ([]SemanticResult, error) {
+	if filter.Limit <= 0 {
+		filter.Limit = 50
+	}
+	if filter.Limit > 200 {
+		filter.Limit = 200
+	}
+
+	vec := pgvector.NewVector(queryVec)
+
+	where := []string{"c.embedding IS NOT NULL"}
+	args := []any{vec}
+	argIdx := 2 // $1 is the query vector
+
+	if filter.SourceID != nil {
+		where = append(where, fmt.Sprintf("c.source_id = $%d", argIdx))
+		args = append(args, *filter.SourceID)
+		argIdx++
+	}
+	if filter.GroupID != nil {
+		where = append(where, fmt.Sprintf("c.group_id = $%d", argIdx))
+		args = append(args, *filter.GroupID)
+		argIdx++
+	}
+	if filter.MediaType != nil {
+		where = append(where, fmt.Sprintf("c.media_type = $%d", argIdx))
+		args = append(args, *filter.MediaType)
+		argIdx++
+	}
+	if filter.Favorite != nil {
+		where = append(where, fmt.Sprintf("c.favorite = $%d", argIdx))
+		args = append(args, *filter.Favorite)
+		argIdx++
+	}
+
+	whereClause := "WHERE " + strings.Join(where, " AND ")
+
+	query := fmt.Sprintf(
+		`SELECT c.id, c.name, c.image, c.url, c.media_type, c.source_id, c.group_id, c.favorite, g.name,
+		        1 - (c.embedding <=> $1) AS similarity
+		 FROM channels c
+		 LEFT JOIN groups g ON c.group_id = g.id
+		 %s
+		 ORDER BY c.embedding <=> $1
+		 LIMIT $%d`,
+		whereClause, argIdx,
+	)
+	args = append(args, filter.Limit)
+
+	rows, err := p.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("SemanticSearch: %w", err)
+	}
+	defer rows.Close()
+
+	var results []SemanticResult
+	for rows.Next() {
+		var r SemanticResult
+		if err := rows.Scan(
+			&r.Channel.ID, &r.Channel.Name, &r.Channel.Image, &r.Channel.URL,
+			&r.Channel.MediaType, &r.Channel.SourceID, &r.Channel.GroupID,
+			&r.Channel.Favorite, &r.Channel.GroupName, &r.Similarity,
+		); err != nil {
+			return nil, fmt.Errorf("SemanticSearch scan: %w", err)
+		}
+		results = append(results, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("SemanticSearch rows: %w", err)
+	}
+	return results, nil
+}
+
+// ListChannelsWithoutEmbeddings returns channels for a source that have no embedding yet.
+func (p *Postgres) ListChannelsWithoutEmbeddings(ctx context.Context, sourceID int64, limit int) ([]models.Channel, error) {
+	if limit <= 0 {
+		limit = 1000
+	}
+
+	rows, err := p.pool.Query(ctx,
+		`SELECT c.id, c.name, c.image, c.url, c.media_type, c.source_id, c.group_id, c.favorite, g.name
+		 FROM channels c
+		 LEFT JOIN groups g ON c.group_id = g.id
+		 WHERE c.source_id = $1 AND c.embedding IS NULL
+		 ORDER BY c.id
+		 LIMIT $2`,
+		sourceID, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("ListChannelsWithoutEmbeddings: %w", err)
+	}
+	defer rows.Close()
+
+	var channels []models.Channel
+	for rows.Next() {
+		var ch models.Channel
+		if err := rows.Scan(&ch.ID, &ch.Name, &ch.Image, &ch.URL, &ch.MediaType, &ch.SourceID, &ch.GroupID, &ch.Favorite, &ch.GroupName); err != nil {
+			return nil, fmt.Errorf("ListChannelsWithoutEmbeddings scan: %w", err)
+		}
+		channels = append(channels, ch)
+	}
+	return channels, rows.Err()
 }

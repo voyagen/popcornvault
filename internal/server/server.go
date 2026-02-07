@@ -13,6 +13,7 @@ import (
 
 	"github.com/voyagen/popcornvault/api"
 	"github.com/voyagen/popcornvault/internal/config"
+	"github.com/voyagen/popcornvault/internal/embedding"
 	"github.com/voyagen/popcornvault/internal/models"
 	"github.com/voyagen/popcornvault/internal/service"
 	"github.com/voyagen/popcornvault/internal/store"
@@ -20,14 +21,16 @@ import (
 
 // Server holds dependencies for the HTTP API.
 type Server struct {
-	store store.Store
-	cfg   *config.Config
-	mux   *http.ServeMux
+	store    store.Store
+	cfg      *config.Config
+	embedder *embedding.Client // nil when VOYAGE_API_KEY is not set
+	mux      *http.ServeMux
 }
 
 // New creates a Server and registers routes.
-func New(s store.Store, cfg *config.Config) *Server {
-	srv := &Server{store: s, cfg: cfg, mux: http.NewServeMux()}
+// embedder may be nil if semantic search is not configured.
+func New(s store.Store, cfg *config.Config, embedder *embedding.Client) *Server {
+	srv := &Server{store: s, cfg: cfg, embedder: embedder, mux: http.NewServeMux()}
 	srv.routes()
 	return srv
 }
@@ -44,6 +47,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/sources/{id}/refresh", s.handleRefreshSource)
 
 	// Channels
+	s.mux.HandleFunc("GET /api/channels/search", s.handleSearchChannels)
 	s.mux.HandleFunc("GET /api/channels", s.handleListChannels)
 	s.mux.HandleFunc("GET /api/channels/{id}", s.handleGetChannel)
 	s.mux.HandleFunc("PATCH /api/channels/{id}/favorite", s.handleToggleChannelFavorite)
@@ -133,7 +137,7 @@ func (s *Server) handleAddSource(w http.ResponseWriter, r *http.Request) {
 		req.Name = "m3u"
 	}
 
-	sourceID, count, err := service.Ingest(r.Context(), s.store, req.URL, req.Name, s.cfg.UserAgent, s.cfg.Timeout, true)
+	sourceID, count, err := service.Ingest(r.Context(), s.store, req.URL, req.Name, s.cfg.UserAgent, s.cfg.Timeout, true, s.embedder)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, fmt.Errorf("ingest: %w", err))
 		return
@@ -256,7 +260,7 @@ func (s *Server) handleRefreshSource(w http.ResponseWriter, r *http.Request) {
 		userAgent = s.cfg.UserAgent
 	}
 
-	_, count, err := service.Ingest(r.Context(), s.store, src.URL, src.Name, userAgent, s.cfg.Timeout, true)
+	_, count, err := service.Ingest(r.Context(), s.store, src.URL, src.Name, userAgent, s.cfg.Timeout, true, s.embedder)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, fmt.Errorf("refresh: %w", err))
 		return
@@ -407,6 +411,104 @@ func (s *Server) handleToggleChannelFavorite(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusOK, map[string]any{
 		"channel_id": channelID,
 		"favorite":   req.Favorite,
+	})
+}
+
+// --- semantic search handler ---
+
+func (s *Server) handleSearchChannels(w http.ResponseWriter, r *http.Request) {
+	if s.embedder == nil {
+		writeErr(w, http.StatusServiceUnavailable, fmt.Errorf("semantic search is not configured (VOYAGE_API_KEY not set)"))
+		return
+	}
+
+	q := r.URL.Query()
+	query := q.Get("q")
+	if query == "" {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("q parameter is required"))
+		return
+	}
+
+	filter := store.ChannelFilter{}
+
+	if v := q.Get("source_id"); v != "" {
+		id, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid source_id: %s", v))
+			return
+		}
+		filter.SourceID = &id
+	}
+	if v := q.Get("group_id"); v != "" {
+		id, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid group_id: %s", v))
+			return
+		}
+		filter.GroupID = &id
+	}
+	if v := q.Get("media_type"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 16)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid media_type: %s", v))
+			return
+		}
+		mt := int16(n)
+		filter.MediaType = &mt
+	}
+	if v := q.Get("favorite"); v != "" {
+		switch v {
+		case "true", "1":
+			fav := true
+			filter.Favorite = &fav
+		case "false", "0":
+			fav := false
+			filter.Favorite = &fav
+		default:
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid favorite: %s (use true or false)", v))
+			return
+		}
+	}
+	if v := q.Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid limit: %s", v))
+			return
+		}
+		filter.Limit = n
+	}
+
+	// Apply defaults.
+	if filter.Limit <= 0 {
+		filter.Limit = 20
+	}
+	if filter.Limit > 200 {
+		filter.Limit = 200
+	}
+
+	// Embed the query text.
+	vecs, err := s.embedder.Embed(r.Context(), []string{query}, "query")
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, fmt.Errorf("embed query: %w", err))
+		return
+	}
+	if len(vecs) == 0 || len(vecs[0]) == 0 {
+		writeErr(w, http.StatusInternalServerError, fmt.Errorf("empty embedding returned"))
+		return
+	}
+
+	results, err := s.store.SemanticSearch(r.Context(), vecs[0], filter)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	if results == nil {
+		results = []store.SemanticResult{}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"channels": results,
+		"limit":    filter.Limit,
 	})
 }
 
@@ -563,6 +665,9 @@ func writeNoContent(w http.ResponseWriter) {
 }
 
 func writeErr(w http.ResponseWriter, status int, err error) {
+	if status >= 500 {
+		log.Printf("ERROR %d: %v", status, err)
+	}
 	writeJSON(w, status, APIError{
 		Status: status,
 		Error:  http.StatusText(status),

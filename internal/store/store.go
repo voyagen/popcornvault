@@ -21,9 +21,11 @@ type Store interface {
 	// UpsertChannelHeaders inserts or ignores headers for a channel.
 	UpsertChannelHeaders(ctx context.Context, channelID int64, h *models.ChannelHttpHeaders) error
 	// RemoveStaleChannels deletes channels (and their headers) for the source that are NOT in keepIDs.
-	RemoveStaleChannels(ctx context.Context, sourceID int64, keepIDs []int64) error
+	// Returns the number of deleted channels.
+	RemoveStaleChannels(ctx context.Context, sourceID int64, keepIDs []int64) (int64, error)
 	// RemoveOrphanedGroups deletes groups for the source that have no remaining channels.
-	RemoveOrphanedGroups(ctx context.Context, sourceID int64) error
+	// Returns the number of deleted groups.
+	RemoveOrphanedGroups(ctx context.Context, sourceID int64) (int64, error)
 	// UpdateSourceLastUpdated sets last_updated for the source.
 	UpdateSourceLastUpdated(ctx context.Context, sourceID int64) error
 
@@ -46,6 +48,21 @@ type Store interface {
 
 	// ToggleChannelFavorite sets the favorite flag on a channel.
 	ToggleChannelFavorite(ctx context.Context, channelID int64, favorite bool) error
+	// CountChannelsBySource returns the total number of channels for a source.
+	CountChannelsBySource(ctx context.Context, sourceID int64) (int64, error)
+
+	// StoreEmbeddings batch-updates the embedding column for the given channel IDs.
+	StoreEmbeddings(ctx context.Context, channelIDs []int64, embeddings [][]float32) error
+	// SemanticSearch returns channels ordered by cosine similarity to queryVec.
+	SemanticSearch(ctx context.Context, queryVec []float32, filter ChannelFilter) ([]SemanticResult, error)
+	// ListChannelsWithoutEmbeddings returns channels for a source that have no embedding yet.
+	ListChannelsWithoutEmbeddings(ctx context.Context, sourceID int64, limit int) ([]models.Channel, error)
+}
+
+// SemanticResult wraps a Channel with its cosine similarity score.
+type SemanticResult struct {
+	Channel    models.Channel `json:"channel"`
+	Similarity float64        `json:"similarity"`
 }
 
 // ChannelFilter holds optional filters for listing channels.

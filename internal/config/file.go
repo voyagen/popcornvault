@@ -8,10 +8,12 @@ import (
 )
 
 type fileConfig struct {
-	DatabaseURL string `yaml:"database_url"`
-	ServerPort  string `yaml:"server_port"`
-	UserAgent   string `yaml:"user_agent"`
-	Timeout     string `yaml:"timeout"`
+	DatabaseURL  string `yaml:"database_url"`
+	ServerPort   string `yaml:"server_port"`
+	UserAgent    string `yaml:"user_agent"`
+	Timeout      string `yaml:"timeout"`
+	VoyageAPIKey string `yaml:"voyage_api_key"`
+	VoyageModel  string `yaml:"voyage_model"`
 }
 
 // LoadFromFile loads config from a YAML file. database_url is required.
@@ -28,10 +30,12 @@ func LoadFromFile(path string) (*Config, error) {
 		return nil, ErrMissingDatabaseURL
 	}
 	c := &Config{
-		DatabaseURL: f.DatabaseURL,
-		ServerPort:  f.ServerPort,
-		UserAgent:   f.UserAgent,
-		Timeout:     30 * time.Second,
+		DatabaseURL:  f.DatabaseURL,
+		ServerPort:   f.ServerPort,
+		UserAgent:    f.UserAgent,
+		Timeout:      30 * time.Second,
+		VoyageAPIKey: f.VoyageAPIKey,
+		VoyageModel:  f.VoyageModel,
 	}
 	if c.ServerPort == "" {
 		c.ServerPort = "8080"

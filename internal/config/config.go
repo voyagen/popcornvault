@@ -7,10 +7,12 @@ import (
 
 // Config holds application configuration (DB, server, and optional fetcher settings).
 type Config struct {
-	DatabaseURL string        `yaml:"database_url" env:"DATABASE_URL"`
-	ServerPort  string        `yaml:"server_port" env:"SERVER_PORT"`
-	UserAgent   string        `yaml:"user_agent" env:"FETCHER_USER_AGENT"`
-	Timeout     time.Duration `yaml:"timeout" env:"FETCHER_TIMEOUT"`
+	DatabaseURL   string        `yaml:"database_url" env:"DATABASE_URL"`
+	ServerPort    string        `yaml:"server_port" env:"SERVER_PORT"`
+	UserAgent     string        `yaml:"user_agent" env:"FETCHER_USER_AGENT"`
+	Timeout       time.Duration `yaml:"timeout" env:"FETCHER_TIMEOUT"`
+	VoyageAPIKey  string        `yaml:"voyage_api_key" env:"VOYAGE_API_KEY"`
+	VoyageModel   string        `yaml:"voyage_model" env:"VOYAGE_MODEL"`
 }
 
 // Load builds config from environment variables.
@@ -21,10 +23,12 @@ func Load() (*Config, error) {
 		loadEnvFiles()
 	}
 	c := &Config{
-		DatabaseURL: os.Getenv("DATABASE_URL"),
-		ServerPort:  os.Getenv("SERVER_PORT"),
-		UserAgent:   os.Getenv("FETCHER_USER_AGENT"),
-		Timeout:     5 * time.Minute,
+		DatabaseURL:  os.Getenv("DATABASE_URL"),
+		ServerPort:   os.Getenv("SERVER_PORT"),
+		UserAgent:    os.Getenv("FETCHER_USER_AGENT"),
+		Timeout:      5 * time.Minute,
+		VoyageAPIKey: os.Getenv("VOYAGE_API_KEY"),
+		VoyageModel:  os.Getenv("VOYAGE_MODEL"),
 	}
 	if c.ServerPort == "" {
 		c.ServerPort = "8080"
