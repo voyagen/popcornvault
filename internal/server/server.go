@@ -517,6 +517,10 @@ func (s *Server) handleSearchChannels(w http.ResponseWriter, r *http.Request) {
 		filter.Limit = 200
 	}
 
+	// Log active filters for debugging.
+	log.Printf("SemanticSearch q=%q source_id=%v group_id=%v media_type=%v favorite=%v limit=%d",
+		query, filter.SourceID, filter.GroupID, filter.MediaType, filter.Favorite, filter.Limit)
+
 	// Embed the query text.
 	vecs, err := s.embedder.Embed(r.Context(), []string{query}, "query")
 	if err != nil {

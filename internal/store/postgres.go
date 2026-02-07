@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -556,11 +557,13 @@ func (p *Postgres) SemanticSearch(ctx context.Context, queryVec []float32, filte
 		 FROM channels c
 		 LEFT JOIN groups g ON c.group_id = g.id
 		 %s
-		 ORDER BY c.embedding <=> $1
+		 ORDER BY c.embedding <=> $1 ASC
 		 LIMIT $%d`,
 		whereClause, argIdx,
 	)
 	args = append(args, filter.Limit)
+
+	log.Printf("SemanticSearch SQL: %s  args (excl. vector): %v", query, args[1:])
 
 	rows, err := p.pool.Query(ctx, query, args...)
 	if err != nil {
