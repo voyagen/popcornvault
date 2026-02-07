@@ -255,6 +255,37 @@ func (s *Server) handleRefreshSource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Embeddings-only mode: skip M3U ingest, just regenerate embeddings.
+	// Runs in the background with a detached context because large sources
+	// can take 30+ minutes, far exceeding the HTTP write timeout.
+	if r.URL.Query().Get("embeddings_only") == "true" {
+		if s.embedder == nil {
+			writeErr(w, http.StatusServiceUnavailable, fmt.Errorf("embeddings not configured (VOYAGE_API_KEY not set)"))
+			return
+		}
+
+		// Pre-count so the response can report the expected number of channels.
+		channelCount, err := s.store.CountChannelsBySource(r.Context(), sourceID)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, fmt.Errorf("count channels: %w", err))
+			return
+		}
+
+		go func() {
+			bgCtx := context.Background()
+			if _, err := service.RefreshEmbeddings(bgCtx, s.store, s.embedder, sourceID, src.Name); err != nil {
+				log.Printf("embed-refresh[%s]: error: %v", src.Name, err)
+			}
+		}()
+
+		writeJSON(w, http.StatusAccepted, map[string]any{
+			"source_id":       sourceID,
+			"channel_count":   channelCount,
+			"embeddings_only": true,
+		})
+		return
+	}
+
 	userAgent := src.UserAgent
 	if userAgent == "" {
 		userAgent = s.cfg.UserAgent

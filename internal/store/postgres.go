@@ -586,6 +586,32 @@ func (p *Postgres) SemanticSearch(ctx context.Context, queryVec []float32, filte
 	return results, nil
 }
 
+// ListChannelsBySource returns all channels for a source (with group name joined).
+func (p *Postgres) ListChannelsBySource(ctx context.Context, sourceID int64) ([]models.Channel, error) {
+	rows, err := p.pool.Query(ctx,
+		`SELECT c.id, c.name, c.image, c.url, c.media_type, c.source_id, c.group_id, c.favorite, g.name
+		 FROM channels c
+		 LEFT JOIN groups g ON c.group_id = g.id
+		 WHERE c.source_id = $1
+		 ORDER BY c.id`,
+		sourceID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("ListChannelsBySource: %w", err)
+	}
+	defer rows.Close()
+
+	var channels []models.Channel
+	for rows.Next() {
+		var ch models.Channel
+		if err := rows.Scan(&ch.ID, &ch.Name, &ch.Image, &ch.URL, &ch.MediaType, &ch.SourceID, &ch.GroupID, &ch.Favorite, &ch.GroupName); err != nil {
+			return nil, fmt.Errorf("ListChannelsBySource scan: %w", err)
+		}
+		channels = append(channels, ch)
+	}
+	return channels, rows.Err()
+}
+
 // ListChannelsWithoutEmbeddings returns channels for a source that have no embedding yet.
 func (p *Postgres) ListChannelsWithoutEmbeddings(ctx context.Context, sourceID int64, limit int) ([]models.Channel, error) {
 	if limit <= 0 {

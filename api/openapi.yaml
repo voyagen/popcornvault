@@ -132,17 +132,40 @@ paths:
       operationId: refreshSource
       summary: Re-ingest a source from its URL
       tags: [Sources]
+      parameters:
+        - name: embeddings_only
+          in: query
+          required: false
+          description: >
+            When true, skip the full M3U re-ingest and only regenerate embeddings
+            for all existing channels of the source. Requires VOYAGE_API_KEY to be
+            configured (returns 503 otherwise).
+          schema:
+            type: boolean
+            default: false
       responses:
         "200":
-          description: Source refreshed
+          description: Source refreshed (full re-ingest)
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/RefreshResponse"
+        "202":
+          description: Embedding refresh accepted and running in background (embeddings_only=true)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EmbeddingsRefreshResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
+        "503":
+          description: Embeddings not configured (only when embeddings_only=true)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -514,6 +537,20 @@ components:
           type: integer
         refreshed:
           type: boolean
+
+    EmbeddingsRefreshResponse:
+      type: object
+      properties:
+        source_id:
+          type: integer
+          format: int64
+        channel_count:
+          type: integer
+          format: int64
+          description: Total channels for the source (embeddings are being generated in the background)
+        embeddings_only:
+          type: boolean
+          description: Always true for embeddings-only refreshes
 
     ChannelListResponse:
       type: object

@@ -55,6 +55,8 @@ type Store interface {
 	StoreEmbeddings(ctx context.Context, channelIDs []int64, embeddings [][]float32) error
 	// SemanticSearch returns channels ordered by cosine similarity to queryVec.
 	SemanticSearch(ctx context.Context, queryVec []float32, filter ChannelFilter) ([]SemanticResult, error)
+	// ListChannelsBySource returns all channels for a source (with group name joined).
+	ListChannelsBySource(ctx context.Context, sourceID int64) ([]models.Channel, error)
 	// ListChannelsWithoutEmbeddings returns channels for a source that have no embedding yet.
 	ListChannelsWithoutEmbeddings(ctx context.Context, sourceID int64, limit int) ([]models.Channel, error)
 }

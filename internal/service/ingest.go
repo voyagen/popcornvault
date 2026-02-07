@@ -161,6 +161,78 @@ func Ingest(ctx context.Context, s store.Store, m3uURL string, sourceName string
 	return sourceID, channelCount, nil
 }
 
+// RefreshEmbeddings loads all channels for a source from the database and
+// (re-)generates their embeddings. Unlike the background embedding pass in
+// Ingest, this runs in the foreground so the caller can wait for it to finish.
+// Returns the number of channels that were embedded.
+func RefreshEmbeddings(ctx context.Context, s store.Store, embClient *embedding.Client, sourceID int64, sourceName string) (int, error) {
+	const batchSize = 128
+
+	prefix := fmt.Sprintf("embed-refresh[%s]", sourceName)
+	totalStart := time.Now()
+
+	// Load all channels for this source.
+	log.Printf("%s: loading channels for source %d ...", prefix, sourceID)
+	channels, err := s.ListChannelsBySource(ctx, sourceID)
+	if err != nil {
+		return 0, fmt.Errorf("ListChannelsBySource: %w", err)
+	}
+	if len(channels) == 0 {
+		log.Printf("%s: no channels found, nothing to embed", prefix)
+		return 0, nil
+	}
+	log.Printf("%s: loaded %d channels", prefix, len(channels))
+
+	// Build embedding texts and collect IDs.
+	ids := make([]int64, len(channels))
+	texts := make([]string, len(channels))
+	for i, ch := range channels {
+		ids[i] = ch.ID
+		group := ""
+		if ch.GroupName != nil && *ch.GroupName != "" {
+			group = *ch.GroupName
+		}
+		label := mediaTypeLabel(ch.MediaType)
+		texts[i] = fmt.Sprintf("%s | %s | %s", ch.Name, group, label)
+	}
+
+	// Generate embeddings.
+	totalBatches := (len(texts) + batchSize - 1) / batchSize
+	log.Printf("%s: generating embeddings (%d/batch, %d batches) ...", prefix, batchSize, totalBatches)
+	embStart := time.Now()
+
+	onProgress := func(batchIndex, total int) {
+		log.Printf("%s:   batch %d / %d embedded", prefix, batchIndex, total)
+	}
+
+	embeddings, err := embClient.EmbedBatch(ctx, texts, "document", batchSize, onProgress)
+	if err != nil {
+		return 0, fmt.Errorf("EmbedBatch: %w", err)
+	}
+	log.Printf("%s: embedding generation done (%s)", prefix, formatDur(time.Since(embStart)))
+
+	// Store embeddings in chunks.
+	log.Printf("%s: storing %d embeddings in database ...", prefix, len(ids))
+	storeStart := time.Now()
+
+	const storeChunkSize = 10000
+	for i := 0; i < len(ids); i += storeChunkSize {
+		end := i + storeChunkSize
+		if end > len(ids) {
+			end = len(ids)
+		}
+		if err := s.StoreEmbeddings(ctx, ids[i:end], embeddings[i:end]); err != nil {
+			return 0, fmt.Errorf("StoreEmbeddings: %w", err)
+		}
+		log.Printf("%s:   %d / %d embeddings stored", prefix, end, len(ids))
+	}
+
+	log.Printf("%s: done -- %d channels embedded (%s store, %s total)",
+		prefix, len(ids), formatDur(time.Since(storeStart)), formatDur(time.Since(totalStart)))
+
+	return len(ids), nil
+}
+
 // mediaTypeLabel returns a human-readable label for a media type constant.
 func mediaTypeLabel(mt int16) string {
 	switch mt {
