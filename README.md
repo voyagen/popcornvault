@@ -4,10 +4,54 @@ PopcornVault is a local backend for managing M3U/IPTV playlists. It provides a f
 
 ## Prerequisites
 
+**With Docker (recommended):**
+
+- **Docker** and **Docker Compose**
+
+**Without Docker:**
+
 - **Go** 1.24+
 - **PostgreSQL** (migrations create the schema)
 
-## Setup
+## Quick Start (Docker)
+
+The fastest way to get running. Docker Compose starts both PostgreSQL (with pgvector) and the API server automatically.
+
+1. **Create a `.env` file** (optional, for semantic search):
+
+   ```bash
+   cp .env.example .env
+   # Edit .env and add your VOYAGE_API_KEY if you want semantic search
+   ```
+
+   You can skip this step -- the app runs fine without it.
+
+2. **Start everything:**
+
+   ```bash
+   docker compose up --build
+   ```
+
+   This builds the Go binary inside a container, starts PostgreSQL with pgvector, runs migrations automatically, and starts the API server.
+
+3. **Access the API:**
+
+   - Health check: [http://localhost:8080/api/health](http://localhost:8080/api/health)
+   - Swagger UI: [http://localhost:8080/api/docs](http://localhost:8080/api/docs)
+
+To stop:
+
+```bash
+docker compose down
+```
+
+To stop and remove the database volume:
+
+```bash
+docker compose down -v
+```
+
+## Manual Setup
 
 1. **Database**
 
@@ -188,12 +232,21 @@ Channels response shape:
 | `SERVER_PORT`         | No       | HTTP server port (default: `8080`). |
 | `FETCHER_USER_AGENT`  | No       | User-Agent for HTTP fetch (default: `PopcornVault/1.0`). |
 | `FETCHER_TIMEOUT`     | No       | HTTP fetch timeout, e.g. `5m` (default: `5m`). |
+| `VOYAGE_API_KEY`      | No       | VoyageAI API key for semantic search. Omit to disable. |
+| `VOYAGE_MODEL`        | No       | VoyageAI model name (default: `voyage-3-lite`). |
 
-Copy `.env.example` to `.env.local` and adjust:
+**Local development:** copy `.env.example` to `.env.local` and adjust:
 
 ```bash
 cp .env.example .env.local
 # Edit .env.local
+```
+
+**Docker:** copy `.env.example` to `.env` and adjust. `DATABASE_URL` is set automatically by `docker-compose.yml`, so you can omit it from your `.env` file:
+
+```bash
+cp .env.example .env
+# Edit .env — only VOYAGE_API_KEY and other optional vars are needed
 ```
 
 ### Config file (YAML)
