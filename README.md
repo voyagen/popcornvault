@@ -1,4 +1,4 @@
-# PopcornVault
+# 🍿 PopcornVault
 
 PopcornVault is a local backend for managing M3U/IPTV playlists. It provides a full REST API to add, update, search, and refresh IPTV sources and channels, backed by PostgreSQL. All playlist management happens through the API (or the built-in Swagger UI).
 
