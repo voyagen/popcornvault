@@ -1,0 +1,35 @@
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: popcornvault
+      POSTGRES_PASSWORD: popcornvault
+      POSTGRES_DB: popcornvault
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U popcornvault"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://popcornvault:popcornvault@db:5432/popcornvault?sslmode=disable
+      SERVER_PORT: "8080"
+    env_file:
+      - path: .env
+        required: false
+
+volumes:
+  pgdata:

@@ -1,0 +1,38 @@
+# Binary
+/popcornvault
+
+# Env files with secrets
+.env
+.env.local
+.env.*.local
+
+# Git
+.git
+.gitignore
+
+# Go
+/vendor/
+*.exe
+*.test
+*.out
+go.work
+
+# IDE
+.idea/
+.vscode/
+.cursor/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Debug / coverage
+debug
+coverage.out
+*.prof
+
+# Docker (avoid recursive context)
+docker-compose.yml
