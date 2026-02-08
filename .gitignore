@@ -28,3 +28,9 @@ Thumbs.db
 debug
 coverage.out
 *.prof
+
+# Docker
+pgdata/
+
+# Database exports
+*.sql
