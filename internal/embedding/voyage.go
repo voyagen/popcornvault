@@ -25,14 +25,11 @@ type Client struct {
 }
 
 // NewClient creates a VoyageAI embedding client.
-// If model is empty, it defaults to "voyage-3-lite".
-func NewClient(apiKey, model string) *Client {
-	if model == "" {
-		model = defaultModel
-	}
+// The model is always voyage-3-lite (512 dimensions).
+func NewClient(apiKey string) *Client {
 	return &Client{
 		apiKey: apiKey,
-		model:  model,
+		model:  defaultModel,
 		httpClient: &http.Client{
 			Timeout: defaultHTTPTimeout,
 		},

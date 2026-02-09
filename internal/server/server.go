@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/voyagen/popcornvault/api"
+	"github.com/voyagen/popcornvault/internal/cache"
 	"github.com/voyagen/popcornvault/internal/config"
 	"github.com/voyagen/popcornvault/internal/embedding"
 	"github.com/voyagen/popcornvault/internal/models"
@@ -24,13 +25,15 @@ type Server struct {
 	store    store.Store
 	cfg      *config.Config
 	embedder *embedding.Client // nil when VOYAGE_API_KEY is not set
+	redis    *cache.Redis      // nil when REDIS_URL is not set
 	mux      *http.ServeMux
 }
 
 // New creates a Server and registers routes.
 // embedder may be nil if semantic search is not configured.
-func New(s store.Store, cfg *config.Config, embedder *embedding.Client) *Server {
-	srv := &Server{store: s, cfg: cfg, embedder: embedder, mux: http.NewServeMux()}
+// rds may be nil if Redis is not configured (lock/queue features disabled).
+func New(s store.Store, cfg *config.Config, embedder *embedding.Client, rds *cache.Redis) *Server {
+	srv := &Server{store: s, cfg: cfg, embedder: embedder, redis: rds, mux: http.NewServeMux()}
 	srv.routes()
 	return srv
 }
@@ -255,6 +258,23 @@ func (s *Server) handleRefreshSource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Acquire a distributed lock to prevent concurrent refreshes of the same source.
+	// The lock auto-expires after 30 minutes (safety net for long ingests).
+	lockKey := fmt.Sprintf("lock:refresh:%d", sourceID)
+	if s.redis != nil {
+		unlock, err := cache.TryLock(r.Context(), s.redis, lockKey, 30*time.Minute)
+		if errors.Is(err, cache.ErrLocked) {
+			writeErr(w, http.StatusConflict, fmt.Errorf("source %d refresh is already in progress", sourceID))
+			return
+		}
+		if err != nil {
+			log.Printf("cache: lock %s: %v", lockKey, err)
+			// Non-fatal — proceed without the lock.
+		} else {
+			defer unlock()
+		}
+	}
+
 	// Embeddings-only mode: skip M3U ingest, just regenerate embeddings.
 	// Runs in the background with a detached context because large sources
 	// can take 30+ minutes, far exceeding the HTTP write timeout.
@@ -271,12 +291,20 @@ func (s *Server) handleRefreshSource(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		go func() {
-			bgCtx := context.Background()
-			if _, err := service.RefreshEmbeddings(bgCtx, s.store, s.embedder, sourceID, src.Name); err != nil {
-				log.Printf("embed-refresh[%s]: error: %v", src.Name, err)
+		// Enqueue via Redis if available, otherwise fall back to goroutine.
+		if s.redis != nil {
+			job := cache.EmbeddingJob{
+				SourceID:       sourceID,
+				SourceName:     src.Name,
+				EmbeddingsOnly: true,
 			}
-		}()
+			if err := cache.Enqueue(r.Context(), s.redis, cache.DefaultQueue, job); err != nil {
+				log.Printf("queue: enqueue failed, falling back to goroutine: %v", err)
+				s.refreshEmbeddingsAsync(sourceID, src.Name)
+			}
+		} else {
+			s.refreshEmbeddingsAsync(sourceID, src.Name)
+		}
 
 		writeJSON(w, http.StatusAccepted, map[string]any{
 			"source_id":       sourceID,
@@ -302,6 +330,16 @@ func (s *Server) handleRefreshSource(w http.ResponseWriter, r *http.Request) {
 		"channel_count": count,
 		"refreshed":     true,
 	})
+}
+
+// refreshEmbeddingsAsync runs embedding refresh in a background goroutine (fallback when Redis queue is unavailable).
+func (s *Server) refreshEmbeddingsAsync(sourceID int64, sourceName string) {
+	go func() {
+		bgCtx := context.Background()
+		if _, err := service.RefreshEmbeddings(bgCtx, s.store, s.embedder, sourceID, sourceName); err != nil {
+			log.Printf("embed-refresh[%s]: error: %v", sourceName, err)
+		}
+	}()
 }
 
 // --- channel handlers ---
